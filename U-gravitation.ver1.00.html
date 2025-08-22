@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>重力軌道シミュレーター v1.7（矢印1.5×／対向Δt向き削除／Δtクイックボタン）</title>
+<style>
+  :root{ --panel-w: 390px; --bg:#0a0d12; --fg:#e6edf3; --muted:#a8b3c7; --accent:#4aa8ff; }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:system-ui, -apple-system, Segoe UI, Roboto, Noto Sans JP, Helvetica, Arial, sans-serif}
+  .wrap{display:grid;grid-template-columns:minmax(300px,1fr) var(--panel-w);gap:12px;height:100%;padding:12px}
+  .card{background:#0f1420;border:1px solid #1e293b;border-radius:14px;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+  .canvas-card{position:relative;display:flex;align-items:center;justify-content:center}
+  canvas{width:100%;height:100%;display:block;border-radius:12px}
+  .hud{position:absolute;left:10px;top:10px;background:rgba(10,13,18,.55);backdrop-filter:blur(4px);padding:6px 8px;border-radius:10px;font-size:12px;line-height:1.5}
+  .title{font-weight:700;font-size:16px;margin:0 0 6px 0;color:#c7d2fe}
+  .panel{padding:10px; overflow:auto}
+  .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+  button{background:#162032;color:#e6edf3;border:1px solid #24324a;border-radius:10px;padding:8px 10px;cursor:pointer}
+  button.primary{background:linear-gradient(180deg,#1d4ed8,#1e40af);border-color:#1e40af}
+  .note{font-size:12px;color:var(--muted)}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#101826;border:1px solid #24324a;font-size:11px;color:#a6b1c7;margin-right:6px}
+  .legendx{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0}
+  .legendx .item{display:flex;align-items:center;gap:6px;font-size:12px;color:#a6b1c7}
+  .swatch{width:12px;height:12px;border-radius:3px;display:inline-block}
+  details{border:1px solid #233047;border-radius:10px;padding:8px;margin:8px 0}
+  details>summary{cursor:pointer;font-weight:600;color:#c7d2fe;outline:none}
+  .grid{display:grid;grid-template-columns:120px 1fr 80px;gap:6px;align-items:center}
+  .grid label{font-size:12px;color:var(--muted)}
+  /* 出力のラベル列を詰める */
+  .gridOut{display:grid;grid-template-columns:64px 1fr 64px 1fr;gap:4px;align-items:center}
+  .gridOut label{font-size:10.5px;color:#aab3c7}
+  .val{min-width:0}
+  .compactline{font-size:11.2px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  input[type="range"]{width:100%}
+  input[type="number"]{width:100%;padding:5px 6px;border-radius:8px;background:#0a0f18;color:var(--fg);border:1px solid #233047}
+  .radio-row-tight{display:flex;gap:4px;flex-wrap:nowrap;white-space:nowrap;overflow:auto;margin-top:6px;font-size:11px}
+  .radio-row-tight .pill{font-size:10px;padding:2px 6px}
+  .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace}
+  /* 定数の文字 */
+  #constOut{font-size:11.2px;line-height:1.35;color:#b9c3d5}
+  .miniBtns{display:flex;gap:6px;flex-wrap:wrap}
+  .miniBtns button{padding:4px 8px;font-size:11px;border-radius:999px}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <!-- 左：キャンバスのみ（下に何も置かない） -->
+    <div class="card canvas-card" id="canvasCard">
+      <canvas id="cv"></canvas>
+      <div class="hud" id="hud"></div>
+    </div>
+
+    <!-- 右：1枚のパネルに縦1列でまとめる -->
+    <div class="card panel">
+      <div class="title">地球周回・楕円軌道シミュレーター v1.7</div>
+
+      <div class="legendx">
+        <div class="item"><span class="swatch" style="background:#4aa8ff"></span>軌道トレイル（速度色）</div>
+        <div class="item"><span class="swatch" style="background:#22c55e"></span>等時間の掃過領域（<b>現在→未来 Δt</b>）</div>
+        <div class="item"><span class="swatch" style="background:#38bdf8"></span>対向位置t*の未来 Δt</div>
+        <div class="item"><span class="swatch" style="background:#ffffff;border:1px solid #64748b"></span>速度ベクトル（白）＝未来Δtの弧長×1.5</div>
+      </div>
+
+      <!-- 動作：独立（ボタンのみ） -->
+      <details open>
+        <summary>動作</summary>
+        <div class="btns">
+          <button id="btnToggle" class="primary">▶ 再生</button>
+          <button id="btnReset">⟲ リセット</button>
+          <button id="btnClearTrail">🧹 トレイル消去</button>
+        </div>
+      </details>
+
+      <!-- 描画・視点・環境：初期は折りたたみ -->
+      <details>
+        <summary>描画・視点・環境</summary>
+        <div class="grid">
+          <label>面積ウィンドウ Δt[s]</label>
+          <input type="range" id="areaDt" min="1" max="1200" step="1" value="600" />
+          <input type="number" id="areaDtNum" min="1" max="1200" step="1" value="600" />
+          <div style="grid-column: span 3; margin-top:2px" class="miniBtns">
+            <button type="button" id="dtBtn400">400</button>
+            <button type="button" id="dtBtn600">600</button>
+            <button type="button" id="dtBtn800">800</button>
+            <button type="button" id="dtBtn1200">1200</button>
+          </div>
+
+          <label>表示</label>
+          <div style="grid-column: span 2;display:flex;align-items:center;gap:8px">
+            <label class="pill"><input type="checkbox" id="pair180" /> 対向Δt表示</label>
+            <label class="pill"><input type="checkbox" id="maskHL" checked/> ハイライト上描き</label>
+            <label class="pill"><input type="checkbox" id="showPast" checked/> 過去トレイル表示</label>
+          </div>
+
+          <label>ズーム倍率</label>
+          <input type="range" id="zoomMul" min="0.25" max="6.0" step="0.01" value="1.00" />
+          <input type="number" id="zoomMulNum" min="0.25" max="6.0" step="0.01" value="1.00" />
+
+          <label>時間倍率 ×</label>
+          <input type="range" id="timeScale" min="0.1" max="200" step="0.1" value="20" />
+          <input type="number" id="timeScaleNum" min="0.1" max="200" step="0.1" value="20" />
+
+          <label>オプション</label>
+          <div style="grid-column: span 2;display:flex;align-items:center;gap:8px">
+            <label class="pill"><input type="checkbox" id="dragOn"/> 空気抵抗</label>
+          </div>
+        </div>
+      </details>
+
+      <!-- 出力：横詰め -->
+      <details open>
+        <summary>出力</summary>
+        <div class="gridOut">
+          <label>r 現在</label><div id="nowROut" class="val compactline">—</div>
+          <label>r 対向</label><div id="oppROut" class="val compactline">—</div>
+
+          <label>|v| 現在</label><div id="nowVOut" class="val compactline">—</div>
+          <label>|v| 対向</label><div id="oppVOut" class="val compactline">—</div>
+
+          <label>v_circ</label><div id="vcircOut" class="val compactline">—</div>
+          <label>v_esc</label><div id="vescOut" class="val compactline">—</div>
+
+          <label>面積速度</label><div id="hOut" class="val compactline">—</div>
+          <label>エネルギー</label><div id="EOut" class="val compactline">—</div>
+
+          <label>判定</label><div id="stateOut" class="val compactline" style="grid-column: span 3">—</div>
+        </div>
+      </details>
+
+      <!-- 初期条件：初期は折りたたみ -->
+      <details>
+        <summary>初期条件</summary>
+        <div class="grid">
+          <label>地球質量 M</label>
+          <input type="range" id="mScale" min="0.1" max="5" step="0.1" value="1" />
+          <input type="number" id="mScaleNum" min="0.1" max="5" step="0.1" value="1" />
+
+          <label>地球半径 R</label>
+          <input type="range" id="rScale" min="0.5" max="2.0" step="0.01" value="1" />
+          <input type="number" id="rScaleNum" min="0.5" max="2.0" step="0.01" value="1" />
+
+          <label>初期半径 r₀/R</label>
+          <input type="range" id="r0Scale" min="0" max="10" step="0.01" value="1.00" />
+          <input type="number" id="r0ScaleNum" min="0" max="10" step="0.01" value="1.00" />
+
+          <label>初期速度 v₀/v_circ</label>
+          <input type="range" id="v0Mul" min="0.1" max="2.5" step="0.01" value="1.00" />
+          <input type="number" id="v0MulNum" min="0.1" max="2.5" step="0.01" value="1.00" />
+
+          <label>初期方位角 θ₀[°]</label>
+          <input type="range" id="theta0" min="0" max="360" step="1" value="90" />
+          <input type="number" id="theta0Num" min="0" max="360" step="1" value="90" />
+        </div>
+        <div class="radio-row-tight">
+          <label class="pill"><input type="radio" name="thetaPreset" value="0"> θ₀=0°</label>
+          <label class="pill"><input type="radio" name="thetaPreset" value="90" checked> θ₀=90°</label>
+          <label class="pill"><input type="radio" name="thetaPreset" value="180"> θ₀=180°</label>
+          <label class="pill"><input type="radio" name="thetaPreset" value="270"> θ₀=270°</label>
+        </div>
+      </details>
+
+      <!-- 打上げ方向：初期は折りたたみ -->
+      <details>
+        <summary>打上げ方向</summary>
+        <div class="grid">
+          <label>仰角（半径基準）</label>
+          <input type="range" id="flightAngle" min="-90" max="90" step="1" value="0" />
+          <input type="number" id="flightAngleNum" min="-90" max="90" step="1" value="0" />
+        </div>
+        <div class="note">接線方向（θ₀+90°）を0°基準。下のプリセットはこの基準に対する相対角です。</div>
+        <div class="radio-row-tight">
+          <label class="pill"><input type="radio" name="faPreset" value="0" checked> 0°（接線）</label>
+          <label class="pill"><input type="radio" name="faPreset" value="90"> +90°</label>
+          <label class="pill"><input type="radio" name="faPreset" value="180"> +180°</label>
+          <label class="pill"><input type="radio" name="faPreset" value="-90"> -90°</label>
+        </div>
+        <details>
+          <summary>絶対方位で指定（必要な場合のみ）</summary>
+          <div style="display:flex;gap:8px;align-items:center;margin:6px 0">
+            <label class="pill"><input type="checkbox" id="useAbsHeading"> 有効化</label>
+          </div>
+          <div class="grid">
+            <label>絶対方位[°]</label>
+            <input type="range" id="headingAbs" min="0" max="360" step="1" value="90" />
+            <input type="number" id="headingAbsNum" min="0" max="360" step="1" value="90" />
+          </div>
+          <div class="radio-row-tight">
+            <label class="pill"><input type="radio" name="headPreset" value="0"> 0°</label>
+            <label class="pill"><input type="radio" name="headPreset" value="90" checked> 90°</label>
+            <label class="pill"><input type="radio" name="headPreset" value="180"> 180°</label>
+            <label class="pill"><input type="radio" name="headPreset" value="270"> 270°</label>
+          </div>
+        </details>
+      </details>
+
+      <!-- 定数 -->
+      <details>
+        <summary>定数</summary>
+        <div id="constOut" class="mono">—</div>
+      </details>
+    </div>
+  </div>
+
+<script>
+(() => {
+  // ====== 物理定数（SI） ======
+  const G = 6.67430e-11;     // 万有引力定数 [m^3 kg^-1 s^-2]
+  const M_earth = 5.97219e24; // 地球質量 [kg]
+  const R_earth = 6371e3;     // 地球半径 [m]
+
+  // 大気モデル（簡略）
+  const rho0 = 1.225;    // 海面密度 kg/m^3
+  const H = 8500;        // スケールハイト m
+  const CdA_over_m = 0.01; // 係数 Cd*A/m の既定値
+
+  // ====== DOM ======
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const hud = document.getElementById('hud');
+  const card = document.getElementById('canvasCard');
+
+  const mScale = document.getElementById('mScale');
+  const rScale = document.getElementById('rScale');
+  const r0Scale = document.getElementById('r0Scale');
+  const v0Mul = document.getElementById('v0Mul');
+  const theta0 = document.getElementById('theta0');
+  const flightAngle = document.getElementById('flightAngle');
+  const timeScale = document.getElementById('timeScale');
+  const zoomMul = document.getElementById('zoomMul');
+  const dragOn = document.getElementById('dragOn');
+  const areaDt = document.getElementById('areaDt');
+  const pair180 = document.getElementById('pair180');
+  const maskHL = document.getElementById('maskHL');
+  const showPast = document.getElementById('showPast');
+
+  const mScaleNum = document.getElementById('mScaleNum');
+  const rScaleNum = document.getElementById('rScaleNum');
+  const r0ScaleNum = document.getElementById('r0ScaleNum');
+  const v0MulNum = document.getElementById('v0MulNum');
+  const theta0Num = document.getElementById('theta0Num');
+  const flightAngleNum = document.getElementById('flightAngleNum');
+  const timeScaleNum = document.getElementById('timeScaleNum');
+  const zoomMulNum = document.getElementById('zoomMulNum');
+  const areaDtNum = document.getElementById('areaDtNum');
+
+  const nowROut = document.getElementById('nowROut');
+  const nowVOut = document.getElementById('nowVOut');
+  const oppROut = document.getElementById('oppROut');
+  const oppVOut = document.getElementById('oppVOut');
+  const vcircOut = document.getElementById('vcircOut');
+  const vescOut  = document.getElementById('vescOut');
+  const hOut     = document.getElementById('hOut');
+  const EOut     = document.getElementById('EOut');
+  const stateOut = document.getElementById('stateOut');
+  const constOut = document.getElementById('constOut');
+
+  const btnToggle = document.getElementById('btnToggle');
+  const btnReset = document.getElementById('btnReset');
+  const btnClearTrail = document.getElementById('btnClearTrail');
+
+  // Δt プリセットボタン
+  const dtBtn400 = document.getElementById('dtBtn400');
+  const dtBtn600 = document.getElementById('dtBtn600');
+  const dtBtn800 = document.getElementById('dtBtn800');
+  const dtBtn1200 = document.getElementById('dtBtn1200');
+
+  function setDt(val){ areaDt.value = String(val); areaDtNum.value = String(val); }
+  dtBtn400.addEventListener('click',()=>{ setDt(400); });
+  dtBtn600.addEventListener('click',()=>{ setDt(600); });
+  dtBtn800.addEventListener('click',()=>{ setDt(800); });
+  dtBtn1200.addEventListener('click',()=>{ setDt(1200); });
+
+  // プリセット方位
+  document.querySelectorAll('input[name="thetaPreset"]').forEach(r=>{
+    r.addEventListener('change',()=>{ theta0.value = r.value; theta0Num.value = r.value; applyAndReset(); });
+  });
+  document.querySelectorAll('input[name="faPreset"]').forEach(r=>{
+    r.addEventListener('change',()=>{ flightAngle.value = r.value; flightAngleNum.value = r.value; applyAndReset(); });
+  });
+  const useAbsHeading = document.getElementById('useAbsHeading');
+  const headingAbs = document.getElementById('headingAbs');
+  const headingAbsNum = document.getElementById('headingAbsNum');
+  document.querySelectorAll('input[name="headPreset"]').forEach(r=>{
+    r.addEventListener('change',()=>{ headingAbs.value = r.value; headingAbsNum.value = r.value; });
+  });
+
+  // ====== 状態 ======
+  let state;
+  let running = false;
+  const dt = 1; // 物理刻み（秒）
+  let t = 0;
+  let trail = [];              // {x,y,v,theta,time}
+  let areaTriangles = [];      // 直近Δt（過去） ※保持はする
+  let areaAll = [];            // 過去全履歴の三角形（時間検索用）
+
+  // 双方向バインド
+  function bind(sl, num, on){
+    const f = () => { num.value = sl.value; on && on(); };
+    const g = () => { sl.value = num.value; on && on(); };
+    sl.addEventListener('input', f);
+    num.addEventListener('input', g);
+  }
+  bind(mScale, mScaleNum, applyAndReset);
+  bind(rScale, rScaleNum, applyAndReset);
+  bind(r0Scale, r0ScaleNum, applyAndReset);
+  bind(v0Mul, v0MulNum, applyAndReset);
+  bind(theta0, theta0Num, applyAndReset);
+  bind(flightAngle, flightAngleNum, applyAndReset);
+  bind(timeScale, timeScaleNum, ()=>updateOutputs());
+  bind(zoomMul, zoomMulNum, ()=>{ draw(); updateOutputs(); });
+  bind(areaDt, areaDtNum, ()=>{/*draw only*/});
+  bind(headingAbs, headingAbsNum, ()=>{/*draw only*/});
+
+  function resetState() {
+    const M = M_earth * parseFloat(mScale.value);
+    const R = R_earth * parseFloat(rScale.value);
+    const mu = G * M;
+
+    // r0: 1.0ならほんの少しだけ上げて接触回避（ギリギリ触れていない）
+    let r0 = R * parseFloat(r0Scale.value);
+    if (Math.abs(parseFloat(r0Scale.value) - 1.0) < 1e-12) r0 = R * (1 + 1e-6);
+
+    const theta = (+theta0.value) * Math.PI/180; // 初期極角
+
+    const x0 = r0 * Math.cos(theta);
+    const y0 = r0 * Math.sin(theta);
+
+    const vcirc = Math.sqrt(mu / Math.max(r0, 1e-9));
+    const v0mag = parseFloat(v0Mul.value) * vcirc;
+
+    let v0;
+    if (useAbsHeading && useAbsHeading.checked){
+      const ang = (+headingAbs.value) * Math.PI/180; // 絶対方位
+      v0 = { x: v0mag*Math.cos(ang), y: v0mag*Math.sin(ang) };
+    } else {
+      // 仰角：半径に対して 0=接線方向（= θ₀+90°）を基準
+      const fa = (+flightAngle.value) * Math.PI/180;
+      const er = {x: Math.cos(theta), y: Math.sin(theta)};     // 半径方向
+      const et = {x: -Math.sin(theta), y: Math.cos(theta)};    // 接線方向（CCW）
+      v0 = { x: v0mag * (Math.cos(fa)*et.x + Math.sin(fa)*er.x),
+             y: v0mag * (Math.cos(fa)*et.y + Math.sin(fa)*er.y) };
+    }
+
+    state = { M, R, mu, r: {x:x0,y:y0}, v: v0, alive: true };
+
+    t = 0;
+    trail = [];
+    areaTriangles = [];
+    areaAll = [];
+    pushTrail(state.r, Math.hypot(v0.x,v0.y), t);
+    updateOutputs();
+    updateConstPanel();
+  }
+
+  function pushTrail(r, vmag, time){
+    const theta = Math.atan2(r.y, r.x); // [-π,π]
+    trail.push({x:r.x, y:r.y, v: vmag, theta, time: (time!==undefined? time : t)});
+    const maxPts = 60000; if (trail.length > maxPts) trail.shift();
+  }
+
+  function energyPerMass(r,v){
+    const rmag = Math.hypot(r.x, r.y);
+    const v2 = v.x*v.x + v.y*v.y;
+    return 0.5*v2 - state.mu/rmag;
+  }
+  function hScalar(r,v){ return r.x*v.y - r.y*v.x; }
+  function atmosphericDensity(rmag){
+    const alt = rmag - state.R; if (alt <= 0) return rho0; return rho0 * Math.exp(-alt / H);
+  }
+
+  function accel(r, v){
+    const rmag = Math.hypot(r.x, r.y);
+    const invr3 = 1 / (rmag*rmag*rmag + 1e-30);
+    let ax = -state.mu * r.x * invr3;
+    let ay = -state.mu * r.y * invr3;
+    if (dragOn.checked){
+      const rho = atmosphericDensity(rmag);
+      const vmag = Math.hypot(v.x, v.y) || 1e-9;
+      const q = 0.5 * rho * vmag*vmag * CdA_over_m;
+      ax += -q * (v.x / vmag);
+      ay += -q * (v.y / vmag);
+    }
+    return {ax, ay};
+  }
+
+  function rk4AdvanceLocal(r, v, h){
+    const a0 = accel(r, v);
+    const k1r = {x: v.x,           y: v.y};
+    const k1v = {x: a0.ax,         y: a0.ay};
+
+    const r1 = {x: r.x + 0.5*h*k1r.x, y: r.y + 0.5*h*k1r.y};
+    const v1 = {x: v.x + 0.5*h*k1v.x, y: v.y + 0.5*h*k1v.y};
+
+    const a1 = accel(r1, v1);
+    const k2r = {x: v1.x,          y: v1.y};
+    const k2v = {x: a1.ax,         y: a1.ay};
+
+    const r2 = {x: r.x + 0.5*h*k2r.x, y: r.y + 0.5*h*k2r.y};
+    const v2 = {x: v.x + 0.5*h*k2v.x, y: v.y + 0.5*h*k2v.y};
+    const a2 = accel(r2, v2);
+    const k3r = {x: v2.x,          y: v2.y};
+    const k3v = {x: a2.ax,         y: a2.ay};
+
+    const r3 = {x: r.x + h*k3r.x,  y: r.y + h*k3r.y};
+    const v3 = {x: v.x + h*k3v.x,  y: v.y + h*k3v.y};
+    const a3 = accel(r3, v3);
+    const k4r = {x: v3.x,          y: v3.y};
+    const k4v = {x: a3.ax,         y: a3.ay};
+
+    const rn = { x: r.x + (h/6)*(k1r.x + 2*k2r.x + 2*k3r.x + k4r.x),
+                 y: r.y + (h/6)*(k1r.y + 2*k2r.y + 2*k3r.y + k4r.y) };
+    const vn = { x: v.x + (h/6)*(k1v.x + 2*k2v.x + 2*k3v.x + k4v.x),
+                 y: v.y + (h/6)*(k1v.y + 2*k2v.y + 2*k3v.y + k4v.y) };
+    return { r: rn, v: vn };
+  }
+
+  function rk4Step(){
+    const h = dt * parseFloat(timeScale.value);
+    const res = rk4AdvanceLocal(state.r, state.v, h);
+    state.r = res.r; state.v = res.v; t += h;
+  }
+
+  function update(){
+    if (running && state.alive){
+      const prevR = {x: state.r.x, y: state.r.y};
+      rk4Step();
+      const vmag = Math.hypot(state.v.x, state.v.y);
+      pushTrail(state.r, vmag, t);
+
+      // 三角形履歴: 直近Δt（過去） & 全履歴
+      const tri = [ {x:0,y:0}, {x:prevR.x,y:prevR.y}, {x:state.r.x,y:state.r.y} ];
+      const th = Math.atan2(state.r.y, state.r.x);
+      const rec = {tri, time:t, theta:th};
+      areaTriangles.push(rec);
+      areaAll.push(rec);
+      const windowS = parseFloat(areaDt.value);
+      while(areaTriangles.length && (t - areaTriangles[0].time) > windowS){ areaTriangles.shift(); }
+      const maxAll = 200000; if (areaAll.length > maxAll) areaAll.shift();
+
+      // 衝突 ⇒ 止める（描画は保持）
+      const rmag = Math.hypot(state.r.x, state.r.y);
+      if (rmag <= state.R){ state.alive = false; running = false; btnToggle.textContent = '▶ 再生'; }
+    }
+
+    draw();
+    updateOutputs();
+    requestAnimationFrame(update);
+  }
+
+  // ====== 半周期の近似（楕円・無抵抗） ======
+  function halfPeriod(){
+    if (dragOn.checked) return null;
+    const eps = energyPerMass(state.r, state.v);
+    if (eps >= 0) return null; // 放物/双曲は対象外
+    const a = -state.mu/(2*eps);
+    const T = 2*Math.PI*Math.sqrt(a*a*a/state.mu);
+    return T*0.5;
+  }
+
+  // ====== 対向時刻 t* を履歴の角度交差で厳密化 ======
+  function oppositeTimePrecise(){
+    if (areaAll.length < 2) return null;
+    const thetaNow = Math.atan2(state.r.y, state.r.x);
+    const target = wrapPi(thetaNow - Math.PI);
+    let best=null; let bestErr=1e99;
+    const tau = halfPeriod();
+    function d(a){ return wrapPi(a - target); }
+    for (let i=1;i<areaAll.length;i++){
+      const A = areaAll[i-1], B = areaAll[i];
+      if (B.time >= t - 1e-6) break; // 過去側のみ
+      const dA = d(A.theta), dB = d(B.theta);
+      if (dA===0){ best = A.time; break; }
+      // 交差判定（符号が異なる）
+      if (dA * dB <= 0){
+        const s = Math.abs(dA) / (Math.abs(dA) + Math.abs(dB) + 1e-12);
+        const tCross = A.time + s*(B.time - A.time);
+        if (tau){
+          const err = Math.abs((t - tau) - tCross);
+          if (err < bestErr){ best=tCross; bestErr=err; }
+        } else {
+          // tauなしなら直近の交差を採用
+          best = tCross;
+        }
+      }
+    }
+    return best;
+  }
+
+  function wrapPi(a){ while(a<=-Math.PI) a+=2*Math.PI; while(a>Math.PI) a-=2*Math.PI; return a; }
+
+  // ====== 未来Δt（三角形列 & 弧長）を現在から予測生成 ======
+  function futurePreview(windowS){
+    const h = dt * parseFloat(timeScale.value);
+    const steps = Math.max(1, Math.ceil(windowS / h));
+    let r = {x: state.r.x, y: state.r.y};
+    let v = {x: state.v.x, y: state.v.y};
+    const tris = [];
+    let arcLen = 0; // 未来Δtの弧長（m）
+    for (let i=0;i<steps;i++){
+      const prevR = {x:r.x, y:r.y};
+      const adv = rk4AdvanceLocal(r, v, h);
+      r = adv.r; v = adv.v;
+      const tri = [ {x:0,y:0}, {x:prevR.x,y:prevR.y}, {x:r.x,y:r.y} ];
+      tris.push(tri);
+      arcLen += Math.hypot(r.x - prevR.x, r.y - prevR.y);
+      const rmag = Math.hypot(r.x, r.y); if (rmag <= state.R) break; // 衝突予見で打切り
+    }
+    return { tris, arcLen };
+  }
+
+  function drawHighlights(scale, futTris){
+    // 緑：現時刻の 未来Δt を予測描画
+    if (futTris && futTris.length){
+      ctx.fillStyle = 'rgba(34,197,94,0.35)'; ctx.strokeStyle = 'rgba(34,197,94,0.75)'; ctx.lineWidth = 1;
+      for (const tri of futTris){ ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(tri[1].x*scale, -tri[1].y*scale); ctx.lineTo(tri[2].x*scale, -tri[2].y*scale); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+    }
+
+    // 水色：対向時刻 t* の 未来 [t*, t*+Δt]
+    if (pair180.checked && areaAll.length){
+      const tOpp = oppositeTimePrecise();
+      if (tOpp !== null){
+        const windowS = parseFloat(areaDt.value);
+        const tStart = tOpp - 1e-6, tEnd = tOpp + windowS + 1e-6;
+        ctx.fillStyle = 'rgba(56,189,248,0.35)'; ctx.strokeStyle='rgba(56,189,248,0.75)'; ctx.lineWidth = 1;
+        for (let i = areaAll.length-1; i >= 0; i--){
+          const rec = areaAll[i];
+          if (rec.time > tEnd) continue;
+          if (rec.time < tStart) break;
+          const tri = rec.tri; ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(tri[1].x*scale, -tri[1].y*scale); ctx.lineTo(tri[2].x*scale, -tri[2].y*scale); ctx.closePath(); ctx.fill(); ctx.stroke();
+        }
+      }
+    }
+  }
+
+  function drawTrail(scale){
+    if (!showPast.checked) return; // 過去トレイル非表示
+    for (let i=1;i<trail.length;i++){
+      const p0 = trail[i-1], p1 = trail[i];
+      const rmag = Math.hypot(p1.x, p1.y);
+      const vc = Math.sqrt(state.mu / Math.max(rmag,1e-6));
+      const ve = Math.sqrt(2*state.mu / Math.max(rmag,1e-6));
+      ctx.strokeStyle = speedColor(p1.v, vc, ve);
+      ctx.lineWidth = 1.6; ctx.beginPath(); ctx.moveTo(p0.x*scale, -p0.y*scale); ctx.lineTo(p1.x*scale, -p1.y*scale); ctx.stroke();
+    }
+  }
+
+  function speedColor(v, vc, ve){
+    const v0 = 0.5*vc; const v1 = ve; const u = Math.max(0, Math.min(1, (v - v0)/(v1 - v0 + 1e-9)));
+    const mid = 0.65; let r,g,b;
+    if (u < mid){ const t=u/mid; r=68+t*(255-68); g=170+t*(200-170); b=255+t*(40-255); }
+    else { const t=(u-mid)/(1-mid); r=255; g=200+t*(80-200); b=40+t*(80-40); }
+    return `rgb(${r|0},${g|0},${b|0})`;
+  }
+
+  function computeScale(){
+    // スライダー 2.0 を 1x として扱う
+    const pad = 1.1;
+    let maxr = state.R * 1.2;
+    for (const p of trail){ const rr = Math.hypot(p.x, p.y); if (rr > maxr) maxr = rr; }
+    const base = (Math.min(cv.width, cv.height) * 0.46) / (maxr * pad);
+    return base * (parseFloat(zoomMul.value)/2.0);
+  }
+
+  function draw(){
+    const dpr = window.devicePixelRatio || 1;
+    const rect = card.getBoundingClientRect();
+    const w = Math.floor(rect.width), h = Math.floor(rect.height);
+    if (cv.width !== Math.floor(w*dpr) || cv.height !== Math.floor(h*dpr)){ cv.width = Math.floor(w*dpr); cv.height = Math.floor(h*dpr); ctx.setTransform(dpr,0,0,dpr,0,0); }
+    ctx.clearRect(0,0,w,h);
+
+    const cx = w*0.5, cy = h*0.5; const scale = computeScale();
+
+    // 未来Δtプレビューを先に計算（ハイライト＆矢印で共用）
+    const windowS = parseFloat(areaDt.value);
+    const fut = futurePreview(windowS);
+
+    // 背景
+    ctx.save(); ctx.globalAlpha = 0.25; for (let i=0;i<80;i++){ const x=(i*97%w), y=(i*57%h); ctx.fillStyle = i%9?'#111827':'#0b1220'; ctx.fillRect(x,y,2,2);} ctx.restore();
+
+    ctx.save(); ctx.translate(cx, cy);
+
+    // 地球
+    ctx.fillStyle = '#102c44'; ctx.strokeStyle = '#23405c'; ctx.lineWidth = 1.2;
+    const Re_pix = state.R * scale; ctx.beginPath(); ctx.arc(0,0, Math.max(2, Re_pix), 0, Math.PI*2); ctx.fill(); ctx.stroke();
+
+    // 描画順：ハイライト上描きがONなら【先に軌道→後にハイライト】、OFFなら従来順
+    if (maskHL.checked){
+      drawTrail(scale);
+      drawHighlights(scale, fut.tris);
+    } else {
+      drawHighlights(scale, fut.tris);
+      drawTrail(scale);
+    }
+
+    // 衛星と【白速度矢印】（現在位置を起点、方向=v、長さ=未来Δtの弧長×1.5）
+    const sat = {x: state.r.x*scale, y: -state.r.y*scale};
+    const rmagNow = Math.hypot(state.r.x, state.r.y);
+    const vcNow = Math.sqrt(state.mu/Math.max(rmagNow,1e-6));
+    const veNow = Math.sqrt(2*state.mu / Math.max(rmagNow,1e-6));
+    const vmagNow = Math.hypot(state.v.x, state.v.y);
+    ctx.fillStyle = speedColor(vmagNow, vcNow, veNow);
+    ctx.beginPath(); ctx.arc(sat.x, sat.y, 3.6, 0, Math.PI*2); ctx.fill();
+
+    // 矢印
+    if (vmagNow > 1e-9){
+      const vx = state.v.x, vy = state.v.y;
+      const ux = vx / vmagNow, uy = vy / vmagNow; // 単位速度ベクトル
+      let lenPx = fut.arcLen * scale * 1.5; // ★ 1.5倍
+      if (!isFinite(lenPx) || lenPx <= 0){
+        // フォールバック（旧ゲイン）
+        lenPx = vmagNow * 0.02 * 0.8 * scale * 1.5; // ★ 1.5倍
+      }
+      // 上限を画面の40%に制限
+      const maxLen = Math.min(w, h) * 0.4; if (lenPx > maxLen) lenPx = maxLen;
+      const ax =  ux * lenPx;
+      const ay = -uy * lenPx; // y反転
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.8;
+      ctx.beginPath(); ctx.moveTo(sat.x, sat.y); ctx.lineTo(sat.x + ax, sat.y + ay); ctx.stroke();
+      const ang = Math.atan2(ay, ax); const ah = Math.max(8, Math.min(16, lenPx*0.12));
+      const a1 = ang + Math.PI*0.82; const a2 = ang - Math.PI*0.82;
+      const tx = sat.x + ax, ty = sat.y + ay; ctx.beginPath(); ctx.moveTo(tx,ty); ctx.lineTo(tx + ah*Math.cos(a1), ty + ah*Math.sin(a1)); ctx.lineTo(tx + ah*Math.cos(a2), ty + ah*Math.sin(a2)); ctx.closePath(); ctx.fillStyle='#ffffff'; ctx.fill();
+    }
+
+    ctx.restore();
+
+    hud.innerHTML = `t = ${t.toFixed(1)} s` + (running? ' <span class="pill">RUN</span>':' <span class="pill">PAUSE</span>');
+  }
+
+  // 近似の対向点（理論）
+  function oppositeAnomalyRV(){
+    const eps = energyPerMass(state.r, state.v);
+    if (dragOn.checked || eps >= 0) return null; // 近似しない
+    const r = state.r, v = state.v, mu = state.mu;
+    const rmag = Math.hypot(r.x,r.y);
+    const h = hScalar(r,v); const hz = h;
+    const vx=v.x, vy=v.y; const rx=r.x, ry=r.y; const rhat = {x: rx/rmag, y: ry/rmag};
+    const vxh = {x: vy*hz, y: -vx*hz};
+    const evec = {x: vxh.x/mu - rhat.x, y: vxh.y/mu - rhat.y};
+    const e = Math.hypot(evec.x, evec.y); if (!(e<1)) return null;
+    const a = -mu/(2*eps);
+    const pHatNorm = Math.hypot(evec.x,evec.y) || 1; const pHat = {x: evec.x/pHatNorm, y: evec.y/pHatNorm};
+    const qHat = {x: -pHat.y, y: pHat.x};
+    const cosnu = (r.x*pHat.x + r.y*pHat.y)/rmag; let nu = Math.acos(Math.max(-1, Math.min(1, cosnu)));
+    const sinu = (r.x*qHat.x + r.y*qHat.y)/rmag; if (sinu<0) nu = -nu;
+    const nu2 = nu + Math.PI; const r2 = a*(1-e*e) / (1 + e*Math.cos(nu2));
+    const v2 = Math.sqrt(mu*(2/r2 - 1/a));
+    return { r2, v2 };
+  }
+
+  function updateOutputs(){
+    const rmag = Math.hypot(state.r.x, state.r.y);
+    const vmag = Math.hypot(state.v.x, state.v.y);
+    const vcirc = Math.sqrt(state.mu / Math.max(rmag,1e-9));
+    const vesc  = Math.sqrt(2*state.mu / Math.max(rmag,1e-9));
+
+    nowROut.textContent = `${(rmag/1000).toFixed(2)} km`;
+    nowVOut.textContent = `${(vmag/1000).toFixed(3)} km/s`;
+
+    const opp = oppositeAnomalyRV();
+    if (opp){
+      oppROut.textContent = `${(opp.r2/1000).toFixed(2)} km`;
+      oppVOut.textContent = `${(opp.v2/1000).toFixed(3)} km/s`;
+    } else {
+      oppROut.textContent = '—';
+      oppVOut.textContent = '—';
+    }
+
+    vcircOut.textContent = `${(vcirc/1000).toFixed(3)} km/s`;
+    vescOut.textContent  = `${(vesc/1000).toFixed(3)} km/s`;
+
+    const h = Math.abs(hScalar(state.r, state.v));
+    const areal = h/2; // 面積速度
+    hOut.innerHTML = `${sciStr(areal,4)} m²/s`;
+
+    const e = energyPerMass(state.r, state.v);
+    EOut.innerHTML = `${sciStr(e,4)} J/kg`;
+
+    let s = '—';
+    if (rmag <= state.R){ s = '墜落'; }
+    else if (e >= 0){ s = (Math.abs(e) < 1e-2) ? '放物線（臨界）' : '脱出（双曲線）'; }
+    else { s = '周回（楕円）'; }
+    stateOut.textContent = s;
+  }
+
+  // 指数表記を ×10^n に整形（負号もそのまま）
+  function sciStr(num, sig=3){
+    if (!isFinite(num)) return '—';
+    const s = num.toExponential(sig-1);
+    const [m,e] = s.split('e');
+    const exp = parseInt(e,10);
+    return `${m}×10<sup>${exp}</sup>`;
+  }
+
+  function updateConstPanel(){
+    const M = M_earth * parseFloat(mScale.value);
+    const R = R_earth * parseFloat(rScale.value);
+    const mu = G * M;
+    constOut.innerHTML = `
+      <div>G = ${sciStr(G,4)} [m³·kg⁻¹·s⁻²]</div>
+      <div>Mₑ = ${sciStr(M_earth,4)} kg, Rₑ = ${(R_earth/1000).toFixed(0)} km</div>
+      <div>現在: M = ${sciStr(M,4)} kg (×${parseFloat(mScale.value).toFixed(2)})</div>
+      <div>R = ${(R/1000).toFixed(0)} km (×${parseFloat(rScale.value).toFixed(2)})</div>
+      <div>重力定数 μ = GM = ${sciStr(mu,4)} m³/s²</div>
+    `;
+  }
+
+  function applyAndReset(){ resetState(); draw(); }
+
+  dragOn.addEventListener('change', ()=>{ areaTriangles = []; areaAll = []; });
+  areaDt.addEventListener('input', ()=>{/*draw only*/});
+  pair180.addEventListener('change', ()=>{/*draw only*/});
+
+  btnToggle.addEventListener('click', ()=>{
+    running = !running;
+    btnToggle.textContent = running ? '⏸ 一時停止' : '▶ 再生';
+    if (running) btnToggle.classList.add('primary'); else btnToggle.classList.add('primary');
+  });
+  btnReset.addEventListener('click', ()=>{ resetState(); });
+  btnClearTrail.addEventListener('click', ()=>{ trail = []; areaTriangles = []; areaAll = []; pushTrail(state.r, Math.hypot(state.v.x,state.v.y), t); });
+
+  // 初期化
+  resetState();
+  requestAnimationFrame(update);
+})();
+</script>
+</body>
+</html>
